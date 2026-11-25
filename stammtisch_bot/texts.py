@@ -38,12 +38,11 @@ TEXT_FIELDS: list[TextField] = [
     TextField("t_opt_absage", "Antwort 3 – kommt nicht", "Umfrage", "line", "👎"),
 
     # --- Biermenge --------------------------------------------------------------------------
-    TextField("t_menge_basis", "Berechnung nach", "Biermenge", "select", "bier",
-              choices=(("bier", "Zusagen mit Bier"), ("alle", "allen Zusagen"))),
-    TextField("t_menge_regeln", "Regeln", "Biermenge", "list",
+    TextField("t_menge_basis", "Wer wird gezählt?", "Biermenge", "select", "bier",
+              choices=(("bier", "Nur Zusagen mit Bier 🍺"), ("alle", "Alle Zusagen 🍺 + 🚫🍺"))),
+    TextField("t_menge_regeln", "Empfohlene Menge je Personenzahl", "Biermenge", "list",
               "3 = 5l oder Kasten\n6 = 10l\n12 = 20l\nsonst = 30l+",
-              help="Eine Regel pro Zeile: „bis zu N Personen = Menge“. Die letzte Zeile „sonst = …“ gilt für alles darüber. "
-                   "Bei 0 Personen gilt der Ausfall-Text."),
+              help="Bei 0 Personen wird statt einer Menge der Ausfall-Text gesendet."),
     TextField("t_empfehlung", "Empfehlung", "Biermenge", "line", "🟡 Empfohlene Biermenge: {menge}",
               placeholders="{menge}"),
     TextField("t_ausfall", "Ausfall", "Biermenge", "line", "☠️ Stammtisch fällt aus oder keiner trinkt Bier ☠️",
@@ -185,6 +184,8 @@ def parse_rules(text: str) -> tuple[list[tuple[int, str]], str | None]:
         if "=" not in line:
             raise ValueError(f"Zeile {n}: „=“ fehlt")
         left, right = (s.strip() for s in line.split("=", 1))
+        if not right:
+            raise ValueError(f"Zeile {n}: Menge fehlt")
         if left.lower() in ("sonst", "*", "rest", "mehr"):
             fallback = right
         else:

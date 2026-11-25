@@ -20,7 +20,7 @@ from . import __version__
 from .config import DAY_NAMES, FIELDS, WeeklyTime, validate
 from .checks import run_checks
 from .runner import BotRunner
-from .texts import SAMPLE, TEXT_FIELDS, Texts, validate_texts
+from .texts import TEXT_FIELDS, Texts, parse_rules, validate_texts
 from . import updater
 from .store import Store
 
@@ -88,6 +88,14 @@ button:disabled{opacity:.35;cursor:not-allowed}
 .warn{color:var(--acc)}.mut{color:var(--mut)}.checks dt{white-space:nowrap}.checks dd{overflow-wrap:anywhere}
 .big{font-size:2rem;font-weight:700;line-height:1}.stats{display:flex;gap:2rem;margin:.3rem 0 .8rem}.stats div small{margin:0}
 .narrow{max-width:380px}
+table.rules{width:100%;border-collapse:collapse;margin-top:.3rem}table.rules th{text-align:left;font-size:.75rem;color:var(--mut);font-weight:600;padding:0 .4rem .3rem}
+table.rules td{padding:.25rem .4rem;vertical-align:middle}table.rules td:first-child{width:3.5rem;color:var(--mut);font-variant-numeric:tabular-nums}
+table.rules tr.fixed td{color:var(--mut)}table.rules input.bis{width:6rem}table.rules td:last-child{width:2.5rem}
+button.x{background:transparent;color:var(--mut);border:0;padding:.3rem .5rem;font-size:1rem}button.x:hover{color:var(--err)}
+input.bad{border-color:var(--err)!important}
+.seg{display:flex;gap:.5rem;flex-wrap:wrap}.seg label{margin:0;font-weight:400;cursor:pointer}.seg input{position:absolute;opacity:0;width:0}
+.seg span{display:inline-block;padding:.5rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.seg input:checked+span{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}.seg input:focus-visible+span{outline:2px solid var(--acc)}
 textarea.txt{font-family:inherit;font-size:14px}ol.preview{margin:.3rem 0 1rem;padding-left:1.4rem}ol.preview li{margin:.15rem 0}
 pre.log{background:var(--bg);padding:.8rem;border-radius:6px;overflow:auto;max-height:24rem;font-size:12px;white-space:pre-wrap}code{font-family:ui-monospace,monospace}
 .pair{display:flex;gap:.6rem}.pair select{flex:1}.pair input{width:9rem}
@@ -139,6 +147,72 @@ def tz_select(value: str) -> str:
     zones = timezones() if value in timezones() else [value, *timezones()]
     opts = "".join(f'<option{" selected" if z == value else ""}>{escape(z)}</option>' for z in zones)
     return f'<select name="tz">{opts}</select>'
+
+
+def rules_editor(name: str, value: str, default: str) -> str:
+    """Biermengen-Regeln als Stufen-Tabelle; schreibt beim Tippen das Textformat ins versteckte Feld."""
+    try:
+        rules, fallback = parse_rules(value)
+    except ValueError:
+        rules, fallback = parse_rules(default)
+    rows = "".join(
+        f'<tr class="rule"><td class="von"></td>'
+        f'<td><input type="number" class="bis" min="1" value="{limit}" aria-label="bis Personen"></td>'
+        f'<td><input class="amt" value="{escape(amount)}" placeholder="z. B. 10l" aria-label="Menge"></td>'
+        f'<td><button type="button" class="x" title="Stufe entfernen">✕</button></td></tr>'
+        for limit, amount in rules)
+    return f"""
+<table class="rules" id="rules">
+  <thead><tr><th>Von</th><th>Bis Personen</th><th>Empfohlene Menge</th><th></th></tr></thead>
+  <tbody>
+    <tr class="fixed"><td colspan="2">0 Personen</td><td>→ Ausfall-Text (siehe unten)</td><td></td></tr>
+    {rows}
+    <tr class="fixed" id="ab-row"><td colspan="2" id="ab"></td>
+      <td><input class="fb" value="{escape(fallback or "")}" placeholder="z. B. 30l+" aria-label="Menge darüber"></td><td></td></tr>
+  </tbody>
+</table>
+<p><button type="button" class="ghost" id="add-rule">+ Stufe hinzufügen</button></p>
+<p class="err" id="rules-err" hidden>Jede Stufe braucht eine höhere „Bis“-Zahl als die vorige und eine Menge.</p>
+<input type="hidden" name="{name}" id="rules-value" value="{escape(value)}">
+<script>
+(() => {{
+  const t = document.getElementById("rules"), body = t.tBodies[0], abRow = document.getElementById("ab-row");
+  const hidden = document.getElementById("rules-value"), err = document.getElementById("rules-err");
+  function sync() {{
+    let prev = 0, ok = true; const lines = [];
+    body.querySelectorAll("tr.rule").forEach(r => {{
+      const bisEl = r.querySelector(".bis"), amtEl = r.querySelector(".amt");
+      const bis = parseInt(bisEl.value, 10), amt = amtEl.value.trim();
+      r.querySelector(".von").textContent = prev + 1;
+      const bad = !(bis > prev);
+      bisEl.classList.toggle("bad", bad); amtEl.classList.toggle("bad", !amt);
+      if (bad || !amt) ok = false;
+      if (bis > prev) prev = bis;
+      lines.push(bisEl.value + " = " + amt);
+    }});
+    document.getElementById("ab").textContent = "ab " + (prev + 1) + " Personen";
+    const fb = abRow.querySelector(".fb").value.trim();
+    if (fb) lines.push("sonst = " + fb);
+    hidden.value = lines.join("\\n");
+    err.hidden = ok;
+    return ok;
+  }}
+  t.addEventListener("input", sync);
+  t.addEventListener("click", e => {{
+    if (e.target.classList.contains("x")) {{ e.target.closest("tr").remove(); sync(); }}
+  }});
+  document.getElementById("add-rule").addEventListener("click", () => {{
+    const last = [...body.querySelectorAll("tr.rule .bis")].map(i => parseInt(i.value, 10) || 0);
+    const next = (last.length ? Math.max(...last) : 0) + 3;
+    const tr = document.createElement("tr"); tr.className = "rule";
+    tr.innerHTML = '<td class="von"></td><td><input type="number" class="bis" min="1" value="' + next +
+      '"></td><td><input class="amt" placeholder="z. B. 10l"></td><td><button type="button" class="x" title="Stufe entfernen">✕</button></td>';
+    body.insertBefore(tr, abRow); sync(); tr.querySelector(".amt").focus();
+  }});
+  t.closest("form").addEventListener("submit", e => {{ if (!sync()) {{ e.preventDefault(); err.scrollIntoView({{block: "center"}}); }} }});
+  sync();
+}})();
+</script>"""
 
 
 def redirect(path: str, **query: str) -> web.HTTPFound:
@@ -390,7 +464,13 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
             value = saved.get(f.key) or f.default
             changed = ' <span class="warn">· geändert</span>' if saved.get(f.key) and saved[f.key] != f.default else ""
             parts.append(f"<label>{escape(f.label)}{changed}</label>")
-            if f.kind in ("multi", "list"):
+            if f.key == "t_menge_regeln":
+                parts.append(rules_editor(f.key, value, f.default))
+            elif f.kind == "select" and len(f.choices) <= 3:
+                parts.append('<div class="seg">' + "".join(
+                    f'<label><input type="radio" name="{f.key}" value="{c}"{" checked" if c == value else ""}>'
+                    f'<span>{escape(n)}</span></label>' for c, n in f.choices) + "</div>")
+            elif f.kind in ("multi", "list"):
                 rows = max(3, min(14, value.count("\n") + 2))
                 parts.append(f'<textarea name="{f.key}" rows="{rows}" class="txt">{escape(value)}</textarea>')
             elif f.kind == "select":

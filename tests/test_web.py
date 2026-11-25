@@ -109,6 +109,7 @@ async def test_texts_page():
     try:
         await client.post("/login", data={"pw": "geheim123"})
         html = await (await client.get("/texts")).text()
+        assert 'id="rules"' in html and 'name="t_menge_basis" value="bier" checked' in html
         assert "Biermenge" in html and "Vorschau" in html and "🟡 Empfohlene Biermenge: 10l" in html
 
         from stammtisch_bot.texts import TEXT_FIELDS
