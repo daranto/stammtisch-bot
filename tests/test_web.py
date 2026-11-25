@@ -84,3 +84,18 @@ async def test_web_flow():
         assert r.headers["Location"] == "/"
     finally:
         await client.close()
+
+
+async def test_checks_without_settings_and_schedule():
+    from stammtisch_bot.checks import check_schedule, run_checks
+
+    store = Store(":memory:")
+    res = await run_checks(store, False)
+    assert res[0].name == "Einstellungen" and res[0].status == "fehler"
+
+    cfg = Config.from_values(GOOD)
+    (c,) = check_schedule(cfg, store)
+    assert c.status in ("ok", "hinweis") and ("nächste Umfrage" in c.detail or "verpasst" in c.detail)
+    store.set(active="1", kw=48, ends_at="2026-11-25T15:00:00+01:00")
+    (c,) = check_schedule(cfg, store)
+    assert c.detail == "Umfrage KW 48 läuft · endet Mi 25.11. 15:00"

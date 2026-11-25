@@ -7,7 +7,9 @@ import hmac
 import json
 import secrets
 import time
+from datetime import datetime
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 from html import escape
 from typing import Awaitable, Callable
 
@@ -16,6 +18,7 @@ from yarl import URL
 
 from . import __version__
 from .config import DAY_NAMES, FIELDS, WeeklyTime, validate
+from .checks import run_checks
 from .runner import BotRunner
 from .store import Store
 
@@ -80,6 +83,7 @@ button:disabled{opacity:.35;cursor:not-allowed}
 .grid dt{color:var(--mut)}.grid dd{margin:0}.ok{color:var(--ok)}.err{color:var(--err)}
 .msg{padding:.7rem 1rem;border-radius:8px;margin-bottom:1rem;border:1px solid var(--line);background:var(--card)}
 .msg.err{border-color:var(--err)}.msg.ok{border-color:var(--ok)}.set{color:var(--ok);font-weight:400}
+.warn{color:var(--acc)}.mut{color:var(--mut)}.checks dt{white-space:nowrap}.checks dd{overflow-wrap:anywhere}
 .big{font-size:2rem;font-weight:700;line-height:1}.stats{display:flex;gap:2rem;margin:.3rem 0 .8rem}.stats div small{margin:0}
 .narrow{max-width:380px}
 .pair{display:flex;gap:.6rem}.pair select{flex:1}.pair input{width:9rem}
@@ -139,8 +143,34 @@ def redirect(path: str, **query: str) -> web.HTTPFound:
 
 # ------------------------------------------------------------------ Anwendung
 
+def _tz(store: Store) -> ZoneInfo:
+    try:
+        return ZoneInfo(store.settings().get("tz") or "Europe/Berlin")
+    except Exception:  # noqa: BLE001
+        return ZoneInfo("Europe/Berlin")
+
+
+def render_checks(last: tuple[float, list] | None, tz: ZoneInfo) -> str:
+    intro = ('<p><small>Prüft Telegram, Gruppe, MQTT, Google Sheet und ChatGPT. '
+             'In der Gruppe wird dabei nichts geschrieben.</small></p>')
+    button = ('<form method="post" action="/test" onsubmit="const b=this.querySelector(`button`);b.textContent=`Prüfe …`;b.disabled=true"><button class="ghost">Jetzt prüfen</button></form>')
+    if not last:
+        return f'<section id="test"><h2>Verbindungstest</h2>{intro}{button}</section>'
+    ts, checks = last
+    icons = {"ok": '<span class="ok">✓</span>', "fehler": '<span class="err">✗</span>',
+             "hinweis": '<span class="warn">!</span>', "aus": '<span class="mut">–</span>'}
+    rows = "".join(f"<dt>{icons.get(c.status, '?')} {escape(c.name)}</dt><dd>{escape(c.detail)}</dd>" for c in checks)
+    bad = sum(c.status == "fehler" for c in checks)
+    summary = ('<p class="ok"><b>Alles bereit.</b></p>' if not bad
+               else f'<p class="err"><b>{bad} Problem{"e" if bad > 1 else ""} gefunden.</b></p>')
+    when = datetime.fromtimestamp(ts, tz).strftime("%H:%M:%S")
+    return (f'<section id="test"><h2>Verbindungstest · {when}</h2>{summary}'
+            f'<dl class="grid checks">{rows}</dl><p>{button}</p></section>')
+
+
 def create_app(store: Store, runner: BotRunner) -> web.Application:
     routes = web.RouteTableDef()
+    last_checks: list[tuple[float, list] | None] = [None]
 
     @web.middleware
     async def auth(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]):
@@ -238,6 +268,7 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
           <dl class="grid"><dt>🍺</dt><dd>{names(c.names_beer)}</dd><dt>🚫🍺</dt><dd>{names(c.names_nobeer)}</dd></dl>
         </section>
         <section><h2>Zustand</h2><dl class="grid">{grid}</dl></section>
+        {render_checks(last_checks[0], _tz(store))}
         <section><h2>Aktionen</h2><div class="row">
           <form method="post" action="/action/start" onsubmit="return confirm('Neue Umfrage in der Gruppe starten?')"><button {disabled}>Umfrage starten</button></form>
           <form method="post" action="/action/end" onsubmit="return confirm('Umfrage jetzt beenden und Ergebnis senden?')"><button {disabled}>Umfrage beenden</button></form>
@@ -246,6 +277,11 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
         </div></section>
         <p><small>Version {__version__}</small></p>"""
         return page("Status", body, active="/")
+
+    @routes.post("/test")
+    async def test(request: web.Request) -> web.Response:
+        last_checks[0] = (time.time(), await run_checks(store, runner.mqtt_connected))
+        raise web.HTTPFound("/#test")
 
     @routes.post("/action/{name}")
     async def action(request: web.Request) -> web.Response:
