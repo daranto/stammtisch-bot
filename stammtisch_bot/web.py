@@ -7,6 +7,7 @@ import hmac
 import json
 import secrets
 import time
+from functools import lru_cache
 from html import escape
 from typing import Awaitable, Callable
 
@@ -14,7 +15,7 @@ from aiohttp import web
 from yarl import URL
 
 from . import __version__
-from .config import FIELDS, validate
+from .config import DAY_NAMES, FIELDS, WeeklyTime, validate
 from .runner import BotRunner
 from .store import Store
 
@@ -61,7 +62,7 @@ def valid_session(store: Store, token: str | None) -> bool:
 # ------------------------------------------------------------------ HTML
 
 CSS = """
-:root{--bg:#f6f5f2;--card:#fff;--fg:#1f2328;--mut:#6a6f76;--line:#e2e0db;--acc:#b7791f;--ok:#2f855a;--err:#c53030}
+:root{color-scheme:light dark;--bg:#f6f5f2;--card:#fff;--fg:#1f2328;--mut:#6a6f76;--line:#e2e0db;--acc:#b7791f;--ok:#2f855a;--err:#c53030}
 @media(prefers-color-scheme:dark){:root{--bg:#15171a;--card:#1d2024;--fg:#e8e6e3;--mut:#9aa0a6;--line:#2c3036;--acc:#e0a23a;--ok:#5fbf8a;--err:#ef6b6b}}
 *{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
 header{display:flex;align-items:center;gap:1.2rem;padding:.8rem 1.4rem;border-bottom:1px solid var(--line);background:var(--card)}
@@ -70,7 +71,7 @@ header a.on{color:var(--fg);font-weight:600}main{max-width:760px;margin:1.6rem a
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1.1rem 1.3rem;margin-bottom:1rem}
 h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 .8rem}
 label{display:block;font-weight:600;margin:.8rem 0 .25rem}small{display:block;color:var(--mut);font-weight:400;margin-top:.2rem}
-input,textarea{width:100%;padding:.5rem .6rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
+input,textarea,select{width:100%;padding:.5rem .6rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
 textarea{font-family:ui-monospace,monospace;font-size:12px;min-height:7rem}
 button{padding:.55rem 1rem;border:0;border-radius:6px;background:var(--acc);color:#fff;font:inherit;font-weight:600;cursor:pointer}
 button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
@@ -81,6 +82,7 @@ button:disabled{opacity:.35;cursor:not-allowed}
 .msg.err{border-color:var(--err)}.msg.ok{border-color:var(--ok)}.set{color:var(--ok);font-weight:400}
 .big{font-size:2rem;font-weight:700;line-height:1}.stats{display:flex;gap:2rem;margin:.3rem 0 .8rem}.stats div small{margin:0}
 .narrow{max-width:380px}
+.pair{display:flex;gap:.6rem}.pair select{flex:1}.pair input{width:9rem}
 """
 
 
@@ -104,6 +106,30 @@ def flash(request: web.Request) -> str:
     if err:
         return f'<div class="msg err">{escape(err)}</div>'
     return ""
+
+
+@lru_cache(maxsize=1)
+def timezones() -> list[str]:
+    from zoneinfo import available_timezones
+    zones = sorted(z for z in available_timezones() if "/" in z and not z.startswith(("Etc/", "SystemV/", "posix/", "right/")))
+    return zones or ["Europe/Berlin"]
+
+
+def weekly_input(key: str, value: str) -> str:
+    try:
+        wt = WeeklyTime.parse(value)
+    except ValueError:
+        wt = WeeklyTime.parse("di 12:00")
+    days = "".join(f'<option value="{code}"{" selected" if i == wt.weekday else ""}>{name}</option>'
+                   for i, (code, name) in enumerate(DAY_NAMES))
+    return (f'<div class="pair"><select name="{key}_day">{days}</select>'
+            f'<input type="time" name="{key}_time" value="{wt.at.strftime("%H:%M")}" required></div>')
+
+
+def tz_select(value: str) -> str:
+    zones = timezones() if value in timezones() else [value, *timezones()]
+    opts = "".join(f'<option{" selected" if z == value else ""}>{escape(z)}</option>' for z in zones)
+    return f'<select name="tz">{opts}</select>'
 
 
 def redirect(path: str, **query: str) -> web.HTTPFound:
@@ -269,6 +295,10 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
                 field = (f'<textarea name="{f.key}" placeholder="{placeholder}"></textarea>' if f.kind == "json"
                          else f'<input type="password" name="{f.key}" placeholder="{placeholder}" autocomplete="new-password">')
                 parts.append(f'<label>{escape(f.label)}{req} {hint}</label>{field}{clear}')
+            elif f.kind == "weekly":
+                parts.append(f'<label>{escape(f.label)}{req}</label>{weekly_input(f.key, current or f.default)}')
+            elif f.kind == "tz":
+                parts.append(f'<label>{escape(f.label)}{req}</label>{tz_select(current or f.default)}')
             else:
                 parts.append(f'<label>{escape(f.label)}{req}</label>'
                              f'<input name="{f.key}" value="{escape(current or f.default)}">')
@@ -289,6 +319,9 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
         new: dict[str, str] = {}
         for f in FIELDS:
             v = str(form.get(f.key, "")).strip()
+            if f.kind == "weekly":
+                day, at = str(form.get(f"{f.key}_day", "")), str(form.get(f"{f.key}_time", ""))[:5]
+                v = f"{day} {at}" if day and at else ""
             if f.kind in ("secret", "json"):
                 if form.get(f"clear_{f.key}"):
                     v = ""

@@ -7,6 +7,8 @@ from datetime import time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+DAY_NAMES = [("mo", "Montag"), ("di", "Dienstag"), ("mi", "Mittwoch"), ("do", "Donnerstag"),
+             ("fr", "Freitag"), ("sa", "Samstag"), ("so", "Sonntag")]
 WEEKDAYS = {"mo": 0, "di": 1, "mi": 2, "do": 3, "fr": 4, "sa": 5, "so": 6,
             "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -32,7 +34,7 @@ class Field:
     key: str
     label: str
     section: str
-    kind: str = "text"          # text | secret | int | json
+    kind: str = "text"          # text | secret | int | json | weekly | tz
     default: str = ""
     required: bool = False
     help: str = ""
@@ -45,10 +47,10 @@ FIELDS: list[Field] = [
           help="ID der Stammtisch-Gruppe, beginnt meist mit -"),
     Field("admin_chat_id", "Admin-Chat-ID", "Telegram", "int",
           help="Optional: Fehlermeldungen gehen an diesen Chat (z. B. deine User-ID)"),
-    Field("poll_start", "Umfrage starten", "Zeitplan", default="di 12:00", required=True,
-          help="Wochentag (mo–so) und Uhrzeit"),
-    Field("poll_end", "Umfrage beenden", "Zeitplan", default="mi 15:00", required=True),
-    Field("tz", "Zeitzone", "Zeitplan", default="Europe/Berlin", required=True),
+    Field("poll_start", "Umfrage starten", "Zeitplan", "weekly", default="di 12:00", required=True),
+    Field("poll_end", "Umfrage beenden", "Zeitplan", "weekly", default="mi 15:00", required=True,
+          help="Bis zur nächsten Umfrage läuft danach der Zu-spät-Caller"),
+    Field("tz", "Zeitzone", "Zeitplan", "tz", default="Europe/Berlin", required=True),
     Field("mqtt_host", "Broker", "MQTT / Home Assistant", required=True, help="IP oder Hostname"),
     Field("mqtt_port", "Port", "MQTT / Home Assistant", "int", default="1883", required=True),
     Field("mqtt_user", "Benutzer", "MQTT / Home Assistant"),

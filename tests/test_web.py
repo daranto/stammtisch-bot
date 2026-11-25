@@ -54,12 +54,14 @@ async def test_web_flow():
         r = await client.post("/settings", data={"telegram_token": "1:abc"}, allow_redirects=False)
         assert "err=" in r.headers["Location"] and store.settings() == {}
 
-        data = {**GOOD, "google_credentials": KEY, "poll_start": "di 12:00", "poll_end": "mi 15:00",
+        data = {**GOOD, "google_credentials": KEY, "poll_start_day": "do", "poll_start_time": "08:30",
+                "poll_end_day": "fr", "poll_end_time": "18:00",
                 "tz": "Europe/Berlin", "mqtt_port": "1883", "mqtt_base": "stammtisch",
                 "discovery_prefix": "homeassistant"}
         r = await client.post("/settings", data=data, allow_redirects=False)
         assert r.headers["Location"].startswith("/?ok=") and FakeRunner.restarts == 1
         assert store.settings()["telegram_token"] == "1:abc"
+        assert store.settings()["poll_start"] == "do 08:30" and store.settings()["poll_end"] == "fr 18:00"
 
         # Secret leer lassen = unverändert, Token erscheint nicht im HTML
         r = await client.post("/settings", data={**data, "telegram_token": "", "google_credentials": ""},
@@ -67,6 +69,9 @@ async def test_web_flow():
         assert store.settings()["telegram_token"] == "1:abc" and "client_email" in store.settings()["google_credentials"]
         html = await (await client.get("/settings")).text()
         assert "1:abc" not in html and "bot@x.iam.gserviceaccount.com" in html
+        assert '<option value="do" selected>Donnerstag</option>' in html
+        assert 'name="poll_start_time" value="08:30"' in html
+        assert "<option selected>Europe/Berlin</option>" in html
 
         status = await (await client.get("/")).text()
         assert "nicht konfiguriert" in status
