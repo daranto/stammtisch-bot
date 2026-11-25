@@ -1,0 +1,9 @@
+[Unit]
+Description=Stammtisch-Bot: Update aus der Weboberfläche anstoßen
+
+[Path]
+PathExists=/var/lib/stammtisch-bot/update-request
+Unit=stammtisch-bot-update.service
+
+[Install]
+WantedBy=multi-user.target

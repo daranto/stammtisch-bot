@@ -41,20 +41,45 @@ def test_calendar_week():
 
 @pytest.mark.parametrize("n,expected", [(0, None), (1, "5l oder Kasten"), (3, "5l oder Kasten"),
                                         (4, "10l"), (12, "20l"), (13, "30l+")])
-def test_biermenge(n, expected):
-    assert texts.biermenge(n) == expected
+def test_menge_standard(n, expected):
+    assert texts.Texts().menge(n) == expected
 
 
-def test_verlauf():
-    assert texts.verlauf(0, 2, None).endswith(texts.AUSFALL)
-    assert "Austragungsort: Kalle" in texts.verlauf(5, 1, "Kalle")
+def test_menge_eigene_regeln_und_basis():
+    t = texts.Texts({"t_menge_regeln": "bis 2 = Kasten\n8 = 15l\nsonst = 50l", "t_menge_basis": "alle"})
+    assert t.menge(1, 1) == "Kasten" and t.menge(3, 2) == "15l" and t.menge(9, 0) == "50l"
+    with pytest.raises(ValueError):
+        texts.parse_rules("drei = 5l")
 
 
-def test_zu_spaet_kategorie():
+def test_nachrichten_und_platzhalter():
+    t = texts.Texts()
+    vals = t.ergebnis(48, 5, 1, None)
+    lines = t.lines("t_ende", vals)
+    assert lines[1] == "🟡 Stammtisch Zusagen (🍺): 5" and lines[3] == "🟡 Empfohlene Biermenge: 10l"
+    assert not any("bereitgestellt" in x for x in lines)          # ohne Standort entfällt die Zeile
+    assert "Austragungsort: unbekannt" in t.verlauf(vals)
+    assert t.verlauf(t.ergebnis(48, 0, 2, None)).endswith(t.v["t_ausfall"])
+    assert t.question(48).endswith("(KW 48)? 🟣")
+    assert texts.render("Hallo {name} {unbekannt}", {"name": "Bob"}) == "Hallo Bob {unbekannt}"
+    assert texts.render("kaputt {", {}) == "kaputt {"
+
+
+def test_eigene_befehle_und_validierung():
+    t = texts.Texts({"t_eigene": "/regeln = Bitte Deckel\\nmitbringen\nPROST = 🍻"})
+    assert t.commands == {"regeln": "Bitte Deckel\nmitbringen", "prost": "🍻"}
+    errs = texts.validate_texts({"t_eigene": "ohne gleich", "t_frage": "KW {kw", "t_spaet_cooldown": "x"})
+    assert len(errs) == 3
+
+
+def test_zu_spaet():
     assert texts.zu_spaet_kategorie([]) == "zurueckgezogen"
     assert texts.zu_spaet_kategorie([0]) == "bier"
     assert texts.zu_spaet_kategorie([1]) == "keinBier"
-    assert texts.zu_spaet_kategorie([2]) is None
+    assert texts.zu_spaet_kategorie([2]) == "absage"
+    t = texts.Texts()
+    assert t.late_texts("absage") == [] and len(t.late_texts("bier")) == 5 and t.cooldown_s == 120
+    assert texts.Texts.late_message("Hi {name}!", 7, "<Eva>") == 'Hi <a href="tg://user?id=7">&lt;Eva&gt;</a>!'
 
 
 def test_sheets_parsing():

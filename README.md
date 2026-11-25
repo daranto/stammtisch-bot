@@ -33,6 +33,17 @@ Hänge den Container also an die LAN- bzw. Server-Bridge, nicht an WAN.
 
 Alle Einstellungen liegen in `/var/lib/stammtisch-bot/stammtisch.db`. Konfigurationsdateien oder ENV-Variablen gibt es nicht.
 
+### Weboberfläche
+
+| Seite | Inhalt |
+|---|---|
+| **Status** | Zusagen mit Namen, Zustand von Bot und MQTT, Aktionen. Dazu der **Verbindungstest**: Er prüft Bot-Token, Gruppe (Mitgliedschaft, Rechte für Nachrichten und Umfragen), Admin-Chat, MQTT samt HA-Gerät, Google Sheet, ChatGPT-Key und Zeitplan, **ohne in der Gruppe etwas zu schreiben**. |
+| **Einstellungen** | Zugangsdaten und Zeitplan |
+| **Texte & Regeln** | Alle Texte des Bots, die Biermengen-Regeln (z. B. `3 = 5l oder Kasten`, `sonst = 30l+`, wahlweise nach Bier- oder allen Zusagen), die Nachzügler-Sprüche und **eigene Befehle** (`/regeln = Text`). Mit Vorschau, optional auch an den Admin-Chat. |
+| **Update** | Zeigt, ob es auf GitHub eine neue Version gibt, und aktualisiert per Klick |
+
+In den Texten stehen Platzhalter wie `{bier}`, `{standort}` oder `{namen_bier}`. Bei mehrzeiligen Feldern wird jede Zeile als eigene Nachricht gesendet. Eine Zeile entfällt, wenn ein Platzhalter darin leer ist, etwa die Standort-Zeile ohne Standort.
+
 ## Funktionen
 
 | Was | Wann |
@@ -62,7 +73,7 @@ Im Container gibt es dafür diese Befehle:
 
 | Befehl | Zweck |
 |---|---|
-| `update` | neueste Version aus GitHub holen und neu starten |
+| `update` | neueste Version aus GitHub holen und neu starten (geht auch in der Weboberfläche unter „Update“) |
 | `journalctl -u stammtisch-bot -f` | Log ansehen |
 | `stammtisch-reset-password` | Web-Passwort vergessen: beim nächsten Aufruf neu festlegen |
 

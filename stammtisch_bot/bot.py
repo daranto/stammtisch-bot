@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
 import random
 import time
@@ -12,19 +11,18 @@ from typing import Any, TypeVar
 
 from telegram import Update
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
-from telegram.ext import Application, CommandHandler, ContextTypes, PollAnswerHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, PollAnswerHandler, filters
 
-from . import texts
 from .config import Config
 from .mqtt_ha import HomeAssistantMqtt
 from .schedule import calendar_week, cycle, end_after
 from .sheets import Sheets, fmt_de
 from .store import Store
+from .texts import WOCHENTAG, Texts, zu_spaet_kategorie
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 
-LATE_COOLDOWN_S = 2 * 60      # dieselbe Person höchstens alle 2 min aufrufen
 ADMIN_COOLDOWN_S = 15 * 60    # Fehler höchstens alle 15 min an den Admin
 
 
@@ -33,6 +31,7 @@ class StammtischBot:
         self.cfg, self.app, self.store, self.sheets, self.ha = cfg, app, store, sheets, ha
         self._lock = asyncio.Lock()        # Start/Ende nie gleichzeitig
         self._admin_last: dict[str, float] = {}
+        self.t = Texts(store.settings())   # Texte & Regeln aus der Weboberfläche
         ha.on_command = self.on_mqtt_command
 
     # ------------------------------------------------------------------ Hilfen
@@ -102,7 +101,7 @@ class StammtischBot:
             "sum": c.total,
             "names_beer": c.names_beer,
             "names_nobeer": c.names_nobeer,
-            "empfehlung": texts.biermenge(c.beer) or "–",
+            "empfehlung": self.t.menge(c.beer, c.nobeer) or "–",
             "standort": self.store.get("standort"),
             "letzter_status": self.store.last_history_text() or "",
             "ends_at": p.ends_at if p.active else None,
@@ -146,7 +145,7 @@ class StammtischBot:
                     log.info("Alte Umfrage %s nicht geschlossen (%s) – vermutlich schon zu", p.message_id, e)
 
             msg = await self._retry("Umfrage senden", lambda: self.app.bot.send_poll(
-                self.cfg.chat_id, texts.poll_question(kw), texts.POLL_OPTIONS,
+                self.cfg.chat_id, self.t.question(kw), self.t.options,
                 is_anonymous=False, allows_multiple_answers=False))
 
             ends = end_after(now, self.cfg.poll_start, self.cfg.poll_end)
@@ -166,7 +165,8 @@ class StammtischBot:
             c = self.store.counts(p.poll_id)
             standort = await self.standort()
             now = self.now()
-            verlauf = texts.verlauf(c.beer, c.nobeer, standort)
+            vals = self.t.ergebnis(p.kw, c.beer, c.nobeer, standort, c.names_beer, c.names_nobeer)
+            verlauf = self.t.verlauf(vals)
 
             # erst speichern, dann senden -> nach einem Absturz wird nichts doppelt verschickt
             self.store.add_history(p.poll_id, now.year, p.kw, now.isoformat(), c.beer, c.nobeer, standort, verlauf)
@@ -174,15 +174,7 @@ class StammtischBot:
             log.info("Umfrage KW %s beendet: %s", p.kw, verlauf)
         await self.publish()
 
-        lines = [
-            "🟣 Stammtisch Umfrage ist beendet 🟣",
-            f"🟡 Stammtisch Zusagen (🍺): {c.beer}",
-            f"🟡 Stammtisch Zusagen (🚫🍺): {c.nobeer}",
-            texts.bier_empfehlung(c.beer),
-        ]
-        if standort:
-            lines.append(texts.standort_zeile(standort))
-        await self.say(*lines)
+        await self.say(*self.t.lines("t_ende", vals))
 
     async def catch_up(self) -> None:
         """Nach einem Neustart verpasste Start-/End-Zeitpunkte nachholen."""
@@ -217,17 +209,16 @@ class StammtischBot:
         # nach Umfrageschluss: Nachzügler aufrufen
         if self.store.get("late_caller") == "0":
             return
-        kategorie = texts.zu_spaet_kategorie(list(a.option_ids))
-        if not kategorie or not self.store.late_call_allowed(p.poll_id, user.id, LATE_COOLDOWN_S):
+        kategorie = zu_spaet_kategorie(list(a.option_ids))
+        liste = self.t.late_texts(kategorie)
+        if not liste or not self.store.late_call_allowed(p.poll_id, user.id, self.t.cooldown_s):
             return
-        liste = texts.ZU_SPAET[kategorie]
         last = self.store.get(f"zuletzt_{kategorie}")
         i = random.randrange(len(liste))
         if len(liste) > 1 and last is not None and i == int(last):
             i = (i + 1) % len(liste)
         self.store.set(**{f"zuletzt_{kategorie}": i})
-        mention = f'<a href="tg://user?id={user.id}">{html.escape(name)}</a>'
-        await self.say(html.escape(liste[i]).replace("{name}", mention), html_mode=True)
+        await self.say(Texts.late_message(liste[i], user.id, name), html_mode=True)
 
     # ------------------------------------------------------------------ Befehle
     async def send_status(self) -> None:
@@ -235,29 +226,26 @@ class StammtischBot:
         c = self.store.counts(p.poll_id)
         if p.active and c.total > 0:
             standort = await self.standort()
-            lines = [
-                f"🟡 Stammtisch Zusage(n) (🍺): {c.beer}",
-                f"🟡 Stammtisch Zusage(n) (🚫🍺): {c.nobeer}",
-                texts.bier_empfehlung(c.beer),
-            ]
-            if standort:
-                lines.append(texts.standort_zeile(standort))
-            await self.say(*lines)
+            vals = self.t.ergebnis(p.kw, c.beer, c.nobeer, standort, c.names_beer, c.names_nobeer)
+            await self.say(*self.t.lines("t_status", vals))
         else:
-            await self.say(texts.KEIN_STATUS, self.store.last_history_text() or "Kein letzter Status vorhanden")
+            letzter = self.store.last_history_text() or "Kein letzter Status vorhanden"
+            await self.say(*self.t.lines("t_status_leer", {"letzter_status": letzter}))
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self.send_status()
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self.say(*texts.HILFE)
+        s, e = self.cfg.poll_start, self.cfg.poll_end
+        await self.say(*self.t.lines("t_hilfe", {
+            "start_tag": WOCHENTAG[s.weekday], "start_zeit": s.at.strftime("%H:%M"),
+            "ende_tag": WOCHENTAG[e.weekday], "ende_zeit": e.at.strftime("%H:%M")}))
 
     async def cmd_liste(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if self.sheets.url:
-            await self.say(self.sheets.url)
+        await self.say(*self.t.lines("t_liste", {"sheet_url": self.sheets.url or ""}))
 
     async def cmd_song(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self.say(texts.MUSIK)
+        await self.say(*self.t.lines("t_song", {}))
 
     async def cmd_bier(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self.cfg.openai_api_key:
@@ -266,18 +254,30 @@ class StammtischBot:
 
         client = AsyncOpenAI(api_key=self.cfg.openai_api_key, timeout=60)
         resp = await client.chat.completions.create(
-            model=self.cfg.openai_model, messages=[{"role": "user", "content": texts.HERBERT_PROMPT}])
+            model=self.cfg.openai_model, messages=[{"role": "user", "content": self.t.v["t_herbert"]}])
         text = (resp.choices[0].message.content or "").strip()
         if text:
             await self.say(text)
 
     async def cmd_menge(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         liter = await self.sheets.liters()
-        await self.say(f"Es wurden schon {fmt_de(liter)}l Bier getrunken")
+        await self.say(self.t.line("t_liter", {"liter": fmt_de(liter)}))
 
     async def cmd_bagger(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        rest = self.cfg.bagger_ziel - await self.sheets.kasse()
-        await self.say(f"Es fehlen noch {fmt_de(rest, 2)} € zum Stammtisch Bagger.")
+        kasse = await self.sheets.kasse()
+        await self.say(self.t.line("t_bagger", {"rest": fmt_de(self.cfg.bagger_ziel - kasse, 2),
+                                                "kasse": fmt_de(kasse, 2), "ziel": fmt_de(self.cfg.bagger_ziel, 2)}))
+
+    async def cmd_custom(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Eigene Befehle aus „Texte & Regeln“."""
+        text = (update.effective_message.text or "") if update.effective_message else ""
+        word = text.split()[0][1:] if text.startswith("/") else ""
+        name, _, target = word.partition("@")
+        if target and target.lower() != (self.app.bot.username or "").lower():
+            return  # an einen anderen Bot gerichtet
+        reply = self.t.commands.get(name.lower())
+        if reply:
+            await self.say(reply)
 
     async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         err = context.error
@@ -292,7 +292,9 @@ class StammtischBot:
             "bier": self.cmd_bier, "m": self.cmd_menge, "bagger": self.cmd_bagger,
         }
         for name, handler in commands.items():
-            self.app.add_handler(CommandHandler(name, handler, filters=group))
+            if name not in self.t.commands:   # eigener Befehl gleichen Namens hat Vorrang
+                self.app.add_handler(CommandHandler(name, handler, filters=group))
+        self.app.add_handler(MessageHandler(filters.COMMAND & group, self.cmd_custom))
         self.app.add_handler(PollAnswerHandler(self.on_poll_answer))
         self.app.add_error_handler(self.on_error)
 

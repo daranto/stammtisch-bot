@@ -99,3 +99,34 @@ async def test_checks_without_settings_and_schedule():
     store.set(active="1", kw=48, ends_at="2026-11-25T15:00:00+01:00")
     (c,) = check_schedule(cfg, store)
     assert c.detail == "Umfrage KW 48 läuft · endet Mi 25.11. 15:00"
+
+
+async def test_texts_page():
+    store = Store(":memory:")
+    store.set(web_password=hash_password("geheim123"))
+    client = TestClient(TestServer(create_app(store, FakeRunner())))
+    await client.start_server()
+    try:
+        await client.post("/login", data={"pw": "geheim123"})
+        html = await (await client.get("/texts")).text()
+        assert "Biermenge" in html and "Vorschau" in html and "🟡 Empfohlene Biermenge: 10l" in html
+
+        from stammtisch_bot.texts import TEXT_FIELDS
+        form = {f.key: f.default for f in TEXT_FIELDS}
+        form["t_menge_regeln"] = "2 = Kasten\nsonst = 20l"
+        r = await client.post("/texts", data=form, allow_redirects=False)
+        assert "ok=" in r.headers["Location"]
+        saved = store.settings()
+        assert saved["t_menge_regeln"] == "2 = Kasten\nsonst = 20l" and "t_frage" not in saved   # Standard nicht gespeichert
+
+        form["t_menge_regeln"] = "kaputt"
+        r = await client.post("/texts", data=form, allow_redirects=False)
+        assert "err=" in r.headers["Location"] and store.settings()["t_menge_regeln"] == "2 = Kasten\nsonst = 20l"
+
+        await client.post("/texts/reset")
+        assert "t_menge_regeln" not in store.settings()
+
+        html = await (await client.get("/update")).text()
+        assert "Update" in html
+    finally:
+        await client.close()

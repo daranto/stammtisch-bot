@@ -20,6 +20,8 @@ from . import __version__
 from .config import DAY_NAMES, FIELDS, WeeklyTime, validate
 from .checks import run_checks
 from .runner import BotRunner
+from .texts import SAMPLE, TEXT_FIELDS, Texts, validate_texts
+from . import updater
 from .store import Store
 
 COOKIE = "stammtisch_session"
@@ -86,13 +88,16 @@ button:disabled{opacity:.35;cursor:not-allowed}
 .warn{color:var(--acc)}.mut{color:var(--mut)}.checks dt{white-space:nowrap}.checks dd{overflow-wrap:anywhere}
 .big{font-size:2rem;font-weight:700;line-height:1}.stats{display:flex;gap:2rem;margin:.3rem 0 .8rem}.stats div small{margin:0}
 .narrow{max-width:380px}
+textarea.txt{font-family:inherit;font-size:14px}ol.preview{margin:.3rem 0 1rem;padding-left:1.4rem}ol.preview li{margin:.15rem 0}
+pre.log{background:var(--bg);padding:.8rem;border-radius:6px;overflow:auto;max-height:24rem;font-size:12px;white-space:pre-wrap}code{font-family:ui-monospace,monospace}
 .pair{display:flex;gap:.6rem}.pair select{flex:1}.pair input{width:9rem}
 """
 
 
 def page(title: str, body: str, active: str = "", nav: bool = True) -> web.Response:
     links = "".join(f'<a href="{href}" class="{"on" if active == href else ""}">{name}</a>'
-                    for href, name in (("/", "Status"), ("/settings", "Einstellungen")))
+                    for href, name in (("/", "Status"), ("/settings", "Einstellungen"), ("/texts", "Texte & Regeln"),
+                                       ("/update", "Update")))
     head = (f'<header><b>🍺 Stammtisch-Bot</b><nav>{links}</nav>'
             f'<form method="post" action="/logout"><button class="ghost">Abmelden</button></form></header>'
             if nav else '<header><b>🍺 Stammtisch-Bot</b></header>')
@@ -370,6 +375,137 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
         store.save_settings(new)
         await runner.restart()
         raise redirect("/", ok="Gespeichert – Bot startet neu")
+
+    # --- Texte & Regeln -------------------------------------------------------------
+    @routes.get("/texts")
+    async def texts_form(request: web.Request) -> web.Response:
+        saved = store.settings()
+        parts, group = [], None
+        for f in TEXT_FIELDS:
+            if f.group != group:
+                if group is not None:
+                    parts.append("</section>")
+                parts.append(f"<section><h2>{escape(f.group)}</h2>")
+                group = f.group
+            value = saved.get(f.key) or f.default
+            changed = ' <span class="warn">· geändert</span>' if saved.get(f.key) and saved[f.key] != f.default else ""
+            parts.append(f"<label>{escape(f.label)}{changed}</label>")
+            if f.kind in ("multi", "list"):
+                rows = max(3, min(14, value.count("\n") + 2))
+                parts.append(f'<textarea name="{f.key}" rows="{rows}" class="txt">{escape(value)}</textarea>')
+            elif f.kind == "select":
+                opts = "".join(f'<option value="{c}"{" selected" if c == value else ""}>{escape(n)}</option>'
+                               for c, n in f.choices)
+                parts.append(f'<select name="{f.key}">{opts}</select>')
+            elif f.kind == "number":
+                parts.append(f'<input name="{f.key}" value="{escape(value)}" inputmode="decimal" style="width:8rem">')
+            else:
+                parts.append(f'<input name="{f.key}" value="{escape(value)}">')
+            hints = " · ".join(x for x in (f.help, f"Platzhalter: {f.placeholders}" if f.placeholders else "") if x)
+            if hints:
+                parts.append(f"<small>{escape(hints)}</small>")
+        parts.append("</section>")
+
+        # Vorschau mit Beispielwerten
+        try:
+            t = Texts(saved)
+            mengen = "".join(f"<dt>{n} {'Person' if n == 1 else 'Personen'}</dt><dd>{escape(t.menge(n) or t.v['t_ausfall'])}</dd>"
+                             for n in (0, 1, 3, 4, 6, 7, 12, 13, 20))
+            vals = t.ergebnis(48, 5, 2, "Kalle", ["Anna", "Ben", "Cem", "Dora", "Eva"], ["Finn", "Gül"])
+            ende = "".join(f"<li>{escape(x)}</li>" for x in t.lines("t_ende", vals))
+            basis = "Zusagen mit Bier" if t.v["t_menge_basis"] == "bier" else "allen Zusagen"
+            preview = (f'<section><h2>Vorschau (gespeicherter Stand)</h2>'
+                       f'<p><b>Biermenge</b> <small style="display:inline">nach {basis}</small></p><dl class="grid">{mengen}</dl>'
+                       f'<p><b>Umfrage beendet</b> <small style="display:inline">mit 5 🍺, 2 🚫🍺, Standort „Kalle“</small></p>'
+                       f'<ol class="preview">{ende}</ol>'
+                       f'<form method="post" action="/texts/send-preview"><button class="ghost" {"" if runner.bot else "disabled"}>'
+                       f'Vorschau an Admin-Chat senden</button></form></section>')
+        except ValueError as e:
+            preview = f'<section><h2>Vorschau</h2><p class="err">{escape(str(e))}</p></section>'
+
+        body = (f'{flash(request)}{preview}<form method="post">{"".join(parts)}'
+                f'<p class="row"><button>Speichern &amp; Bot neu starten</button></p></form>'
+                f'<section><h2>Zurücksetzen</h2><form method="post" action="/texts/reset" '
+                f'onsubmit="return confirm(`Alle Texte und Regeln auf Standard zurücksetzen?`)">'
+                f'<button class="ghost">Alles auf Standard</button></form></section>')
+        return page("Texte & Regeln", body, active="/texts")
+
+    @routes.post("/texts")
+    async def texts_save(request: web.Request) -> web.Response:
+        form = await request.post()
+        new = {}
+        for f in TEXT_FIELDS:
+            v = str(form.get(f.key, "")).replace("\r\n", "\n").strip()
+            new[f.key] = "" if v == f.default.strip() else v   # Standard nicht speichern
+        errors = validate_texts(new)
+        if errors:
+            raise redirect("/texts", err="Nicht gespeichert: " + "; ".join(errors))
+        store.save_settings(new)
+        await runner.restart()
+        raise redirect("/texts", ok="Gespeichert – Bot startet neu")
+
+    @routes.post("/texts/reset")
+    async def texts_reset(request: web.Request) -> web.Response:
+        store.save_settings({f.key: "" for f in TEXT_FIELDS})
+        await runner.restart()
+        raise redirect("/texts", ok="Alle Texte und Regeln auf Standard zurückgesetzt")
+
+    @routes.post("/texts/send-preview")
+    async def texts_send_preview(request: web.Request) -> web.Response:
+        bot = runner.bot
+        if not bot or not bot.cfg.admin_chat_id:
+            raise redirect("/texts", err="Dafür muss der Bot laufen und eine Admin-Chat-ID eingetragen sein")
+        t = bot.t
+        vals = t.ergebnis(48, 5, 2, "Kalle", ["Anna", "Ben"], ["Finn"])
+        msgs = ["🧪 Vorschau – Umfrage:", t.question(48) + "\n" + " | ".join(t.options),
+                "🧪 Vorschau – Umfrage beendet:", *t.lines("t_ende", vals)]
+        late = t.late_texts("bier")
+        try:
+            for m in msgs:
+                await bot.app.bot.send_message(bot.cfg.admin_chat_id, m)
+            if late:
+                await bot.app.bot.send_message(bot.cfg.admin_chat_id, "🧪 Vorschau – Nachzügler:")
+                await bot.app.bot.send_message(bot.cfg.admin_chat_id, Texts.late_message(late[0], None, "Anna"),
+                                               parse_mode="HTML")
+        except Exception as e:  # noqa: BLE001
+            raise redirect("/texts", err=f"Senden fehlgeschlagen: {e}")
+        raise redirect("/texts", ok="Vorschau an den Admin-Chat gesendet")
+
+    # --- Update -------------------------------------------------------------------------
+    @routes.get("/update")
+    async def update_page(request: web.Request) -> web.Response:
+        info = await updater.status()
+        running = info.running
+        refresh = '<meta http-equiv="refresh" content="4">' if running else ""
+        versions = (f'<dl class="grid"><dt>Installiert</dt><dd>{escape((info.installed or "?")[:7])} · Version {__version__}</dd>'
+                    f'<dt>Auf GitHub</dt><dd>{escape((info.latest or "?")[:7])}'
+                    f'{" – " + escape(info.latest_message) if info.latest_message else ""}</dd></dl>')
+        if not info.supported:
+            box = ('<p class="err">Update aus der Weboberfläche ist in dieser Installation noch nicht eingerichtet. '
+                   'Einmalig im Container <code>update</code> ausführen – danach geht es hier.</p>' + versions)
+        elif running:
+            box = '<p><b>Update läuft …</b> Die Seite lädt sich selbst neu, der Bot startet danach neu.</p>'
+        else:
+            if info.latest and info.installed and info.latest.startswith(info.installed[:7]):
+                state = '<p class="ok"><b>Aktuell.</b></p>'
+            elif info.latest:
+                state = (f'<p class="warn"><b>Neue Version verfügbar:</b> {escape(info.latest[:7])} – '
+                         f'{escape(info.latest_message or "")}</p>')
+            else:
+                state = f'<p class="mut">Neueste Version nicht abrufbar ({escape(info.error or "?")})</p>'
+            box = (f'{state}{versions}'
+                   f'<form method="post" action="/update" onsubmit="return confirm(`Jetzt aktualisieren? Der Bot startet dabei kurz neu.`)">'
+                   f'<p><button>Jetzt aktualisieren</button></p></form>')
+        log_html = f'<section><h2>Letztes Update-Protokoll</h2><pre class="log">{escape(info.log)}</pre></section>' if info.log else ""
+        return page("Update", f'{refresh}{flash(request)}<section><h2>Update</h2>{box}</section>{log_html}', active="/update")
+
+    @routes.post("/update")
+    async def update_start(request: web.Request) -> web.Response:
+        try:
+            updater.request_update()
+        except OSError as e:
+            raise redirect("/update", err=f"Konnte Update nicht anstoßen: {e}")
+        raise redirect("/update", ok="Update angestoßen")
 
     @routes.post("/password")
     async def change_password(request: web.Request) -> web.Response:

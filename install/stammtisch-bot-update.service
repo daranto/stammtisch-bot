@@ -1,0 +1,8 @@
+[Unit]
+Description=Stammtisch-Bot aktualisieren
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/rm -f /var/lib/stammtisch-bot/update-request
+ExecStart=/bin/bash -c 'bash /opt/stammtisch-bot/install/install.sh > /var/lib/stammtisch-bot/update.log 2>&1'
+TimeoutStartSec=15min
