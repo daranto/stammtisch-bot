@@ -20,10 +20,12 @@ from . import __version__
 from .config import DAY_NAMES, FIELDS, WeeklyTime, validate
 from .checks import Check, run_checks
 from .runner import CONFLICT_HINT, BotRunner
+
 from .texts import TEXT_FIELDS, Texts, parse_rules, validate_texts
 from . import updater
 from .store import Store
 
+PREVIEW_POLL_S = 120   # Test-Umfrage im Admin-Chat schließt danach automatisch
 COOKIE = "stammtisch_session"
 SESSION_S = 30 * 24 * 3600
 PUBLIC = {"/login", "/setup", "/style.css"}
@@ -545,10 +547,22 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
             raise redirect("/texts", err="Dafür muss der Bot laufen und eine Admin-Chat-ID eingetragen sein")
         t = bot.t
         vals = t.ergebnis(48, 5, 2, "Kalle", ["Anna", "Ben"], ["Finn"])
-        msgs = ["🧪 Vorschau – Umfrage:", t.question(48) + "\n" + " | ".join(t.options),
-                "🧪 Vorschau – Umfrage beendet:", *t.lines("t_ende", vals)]
+        msgs = ["🧪 Vorschau – Umfrage beendet:", *t.lines("t_ende", vals)]
         late = t.late_texts("bier")
+        chat = bot.cfg.admin_chat_id
         try:
+            # echte Test-Umfrage: wird nicht gezählt (fremde Poll-ID) und nach 2 Minuten geschlossen
+            await bot.app.bot.send_message(chat, "🧪 Test-Umfrage – wird nicht gezählt und schließt nach 2 Minuten:")
+            poll = await bot.app.bot.send_poll(chat, t.question(48), t.options,
+                                               is_anonymous=False, allows_multiple_answers=False)
+
+            async def close_test_poll(_context) -> None:
+                try:
+                    await bot.app.bot.stop_poll(chat, poll.message_id)
+                except Exception:  # noqa: BLE001 – schon geschlossen oder gelöscht
+                    pass
+
+            bot.app.job_queue.run_once(close_test_poll, PREVIEW_POLL_S, name="test-umfrage")
             for m in msgs:
                 await bot.app.bot.send_message(bot.cfg.admin_chat_id, m)
             if late:
@@ -557,7 +571,7 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
                                                parse_mode="HTML")
         except Exception as e:  # noqa: BLE001
             raise redirect("/texts", err=f"Senden fehlgeschlagen: {e}")
-        raise redirect("/texts", ok="Vorschau an den Admin-Chat gesendet")
+        raise redirect("/texts", ok="Vorschau samt Test-Umfrage an den Admin-Chat gesendet (schließt nach 2 Minuten)")
 
     # --- Update -------------------------------------------------------------------------
     @routes.get("/update")

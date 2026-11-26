@@ -164,3 +164,48 @@ async def test_conflict_detection_and_status():
         assert "Token wird woanders genutzt" in html and "seit 5 Min." in html
     finally:
         await client.close()
+
+
+async def test_preview_sends_real_test_poll():
+    from types import SimpleNamespace
+
+    from stammtisch_bot.texts import Texts
+
+    sent, jobs = [], []
+
+    class FakeTgBot:
+        async def send_message(self, chat, text, **kw):
+            sent.append(("msg", chat, text))
+
+        async def send_poll(self, chat, question, options, **kw):
+            sent.append(("poll", chat, question, list(options), kw))
+            return SimpleNamespace(message_id=42)
+
+        async def stop_poll(self, chat, message_id):
+            sent.append(("stop", chat, message_id))
+
+    class FakeJobQueue:
+        def run_once(self, cb, when, name=None):
+            jobs.append((cb, when))
+
+    bot = SimpleNamespace(cfg=SimpleNamespace(admin_chat_id=777), t=Texts({}),
+                          app=SimpleNamespace(bot=FakeTgBot(), job_queue=FakeJobQueue()))
+
+    class BotRunnerFake(FakeRunner):
+        pass
+    BotRunnerFake.bot = bot
+
+    client = TestClient(TestServer(create_app(Store(":memory:"), BotRunnerFake())))
+    await client.start_server()
+    try:
+        await client.post("/setup", data={"pw": "geheim123", "pw2": "geheim123"})
+        r = await client.post("/texts/send-preview", allow_redirects=False)
+        assert "ok=" in r.headers["Location"]
+        polls = [s for s in sent if s[0] == "poll"]
+        assert len(polls) == 1 and polls[0][1] == 777 and "KW 48" in polls[0][2] and len(polls[0][3]) == 3
+        assert polls[0][4]["is_anonymous"] is False
+        assert len(jobs) == 1 and jobs[0][1] == 120
+        await jobs[0][0](None)
+        assert sent[-1] == ("stop", 777, 42)
+    finally:
+        await client.close()

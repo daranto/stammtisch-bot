@@ -39,7 +39,7 @@ Alle Einstellungen liegen in `/var/lib/stammtisch-bot/stammtisch.db`. Konfigurat
 |---|---|
 | **Status** | Zusagen mit Namen, Zustand von Bot und MQTT, Aktionen. Dazu der **Verbindungstest**: Er prüft Bot-Token, Gruppe (Mitgliedschaft, Rechte für Nachrichten und Umfragen), Admin-Chat, MQTT samt HA-Gerät, Google Sheet, ChatGPT-Key und Zeitplan, **ohne in der Gruppe etwas zu schreiben**. Ruft ein anderes Programm (z. B. Node-RED) mit demselben Token ab, steht dort „Konflikt“ und der Admin-Chat bekommt eine Meldung. |
 | **Einstellungen** | Zugangsdaten und Zeitplan |
-| **Texte & Regeln** | Alle Texte des Bots, die Biermengen-Regeln (z. B. `3 = 5l oder Kasten`, `sonst = 30l+`, wahlweise nach Bier- oder allen Zusagen), die Nachzügler-Sprüche und **eigene Befehle** (`/regeln = Text`). Mit Vorschau, optional auch an den Admin-Chat. |
+| **Texte & Regeln** | Alle Texte des Bots, die Biermengen-Regeln (z. B. `3 = 5l oder Kasten`, `sonst = 30l+`, wahlweise nach Bier- oder allen Zusagen), die Nachzügler-Sprüche und **eigene Befehle** (`/regeln = Text`). Mit Vorschau, optional auch an den Admin-Chat: dort als echte Test-Umfrage, die nicht gezählt wird und nach 2 Minuten schließt. |
 | **Update** | Zeigt, ob es auf GitHub eine neue Version gibt, und aktualisiert per Klick |
 
 In den Texten stehen Platzhalter wie `{bier}`, `{standort}` oder `{namen_bier}`. Bei mehrzeiligen Feldern wird jede Zeile als eigene Nachricht gesendet. Eine Zeile entfällt, wenn ein Platzhalter darin leer ist, etwa die Standort-Zeile ohne Standort.
