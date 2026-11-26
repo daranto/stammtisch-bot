@@ -18,8 +18,8 @@ from yarl import URL
 
 from . import __version__
 from .config import DAY_NAMES, FIELDS, WeeklyTime, validate
-from .checks import run_checks
-from .runner import BotRunner
+from .checks import Check, run_checks
+from .runner import CONFLICT_HINT, BotRunner
 from .texts import TEXT_FIELDS, Texts, parse_rules, validate_texts
 from . import updater
 from .store import Store
@@ -321,13 +321,18 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
     async def status(request: web.Request) -> web.Response:
         p = store.poll()
         c = store.counts(p.poll_id)
-        state_cls = "ok" if runner.state == "läuft" else "err"
+        conflict = getattr(runner, "conflict", False)
+        state_cls = "ok" if runner.state == "läuft" and not conflict else "err"
+        bot_state = "Konflikt: Token wird woanders genutzt" if conflict else runner.state
         rows = [
-            ("Bot", f'<span class="{state_cls}">{escape(runner.state)}</span>'
+            ("Bot", f'<span class="{state_cls}">{escape(bot_state)}</span>'
                     + (f' als @{escape(runner.username)}' if runner.username else "")),
             ("MQTT", '<span class="ok">verbunden</span>' if runner.mqtt_connected
                      else '<span class="err">nicht verbunden</span>'),
         ]
+        if conflict:
+            minuten = max(1, round((time.time() - runner.conflict_since) / 60))
+            rows.append(("Konflikt", f'<span class="err">seit {minuten} Min.: {escape(CONFLICT_HINT)}</span>'))
         if runner.error:
             rows.append(("Meldung", f'<span class="err">{escape(runner.error)}</span>'))
         rows += [
@@ -359,7 +364,10 @@ def create_app(store: Store, runner: BotRunner) -> web.Application:
 
     @routes.post("/test")
     async def test(request: web.Request) -> web.Response:
-        last_checks[0] = (time.time(), await run_checks(store, runner.mqtt_connected))
+        checks = await run_checks(store, runner.mqtt_connected)
+        if getattr(runner, "conflict", False):
+            checks.insert(0, Check("Telegram-Abruf", "fehler", CONFLICT_HINT))
+        last_checks[0] = (time.time(), checks)
         raise web.HTTPFound("/#test")
 
     @routes.post("/action/{name}")

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from telegram import Update
-from telegram.error import InvalidToken
+from telegram.error import Conflict, InvalidToken, TelegramError
 from telegram.ext import AIORateLimiter, Application, ApplicationBuilder
 
 from . import __version__
@@ -17,6 +18,10 @@ from .store import Store
 
 log = logging.getLogger(__name__)
 RETRY_S = 60
+CONFLICT_WINDOW_S = 120   # so lange nach dem letzten Konflikt gilt er als aktuell
+CONFLICT_HINT = ("Ein anderes Programm ruft mit demselben Bot-Token Nachrichten ab (z. B. Node-RED). "
+                 "Der Bot bekommt dann keine Befehle und Stimmen mehr. Das andere Programm stoppen "
+                 "oder bei @BotFather mit /revoke einen neuen Token erzeugen.")
 
 
 class BotRunner:
@@ -30,10 +35,30 @@ class BotRunner:
         self._ha: HomeAssistantMqtt | None = None
         self._mqtt_task: asyncio.Task | None = None
         self._task: asyncio.Task | None = None
+        self.conflict_since: float | None = None   # Beginn der aktuellen Konflikt-Phase
+        self.conflict_last: float | None = None
 
     @property
     def mqtt_connected(self) -> bool:
         return bool(self._ha and self._ha.connected)
+
+    @property
+    def conflict(self) -> bool:
+        """True, solange ein anderes Programm denselben Token abfragt."""
+        return bool(self._app and self.conflict_last and time.time() - self.conflict_last < CONFLICT_WINDOW_S)
+
+    def _on_polling_error(self, exc: TelegramError) -> None:
+        # Ersetzt PTBs Standard-Callback, der jeden Fehler mit komplettem Traceback loggt
+        if not isinstance(exc, Conflict):
+            log.error("Fehler beim Abrufen der Updates: %s", exc)
+            return
+        now = time.time()
+        if not self.conflict:
+            self.conflict_since = now
+            log.warning("Konflikt: %s", CONFLICT_HINT)
+            if self.bot:
+                asyncio.get_running_loop().create_task(self.bot.notify_admin("conflict", CONFLICT_HINT))
+        self.conflict_last = now
 
     async def restart(self) -> None:
         await self.stop()
@@ -89,7 +114,7 @@ class BotRunner:
 
         await app.initialize()
         await app.start()
-        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES, error_callback=self._on_polling_error)
         self.username = app.bot.username
         log.info("Stammtisch-Bot %s läuft als @%s", __version__, self.username)
         self._mqtt_task = asyncio.create_task(ha.run())
@@ -114,3 +139,4 @@ class BotRunner:
                 except Exception:  # noqa: BLE001
                     log.debug("Fehler beim Beenden", exc_info=True)
         self._ha, self.bot, self.username = None, None, None
+        self.conflict_since = self.conflict_last = None

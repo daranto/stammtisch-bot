@@ -131,3 +131,36 @@ async def test_texts_page():
         assert "Update" in html
     finally:
         await client.close()
+
+
+async def test_conflict_detection_and_status():
+    import time
+
+    from telegram.error import Conflict, NetworkError
+
+    from stammtisch_bot.runner import BotRunner
+
+    runner = BotRunner(Store(":memory:"))
+    runner._app = object()
+    runner._on_polling_error(NetworkError("weg"))
+    assert not runner.conflict            # andere Fehler sind kein Konflikt
+    runner._on_polling_error(Conflict("terminated by other getUpdates request"))
+    assert runner.conflict and runner.conflict_since
+    runner.conflict_last = time.time() - 600   # lange her -> vorbei
+    assert not runner.conflict
+    runner._on_polling_error(Conflict("x"))
+    runner._app = None                       # Bot gestoppt -> kein Konflikt anzeigen
+    assert not runner.conflict
+
+    class ConflictRunner(FakeRunner):
+        state, username, conflict, conflict_since = "läuft", "testbot", True, time.time() - 300
+
+    store = Store(":memory:")
+    client = TestClient(TestServer(create_app(store, ConflictRunner())))
+    await client.start_server()
+    try:
+        await client.post("/setup", data={"pw": "geheim123", "pw2": "geheim123"})
+        html = await (await client.get("/")).text()
+        assert "Token wird woanders genutzt" in html and "seit 5 Min." in html
+    finally:
+        await client.close()

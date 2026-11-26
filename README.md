@@ -37,7 +37,7 @@ Alle Einstellungen liegen in `/var/lib/stammtisch-bot/stammtisch.db`. Konfigurat
 
 | Seite | Inhalt |
 |---|---|
-| **Status** | Zusagen mit Namen, Zustand von Bot und MQTT, Aktionen. Dazu der **Verbindungstest**: Er prüft Bot-Token, Gruppe (Mitgliedschaft, Rechte für Nachrichten und Umfragen), Admin-Chat, MQTT samt HA-Gerät, Google Sheet, ChatGPT-Key und Zeitplan, **ohne in der Gruppe etwas zu schreiben**. |
+| **Status** | Zusagen mit Namen, Zustand von Bot und MQTT, Aktionen. Dazu der **Verbindungstest**: Er prüft Bot-Token, Gruppe (Mitgliedschaft, Rechte für Nachrichten und Umfragen), Admin-Chat, MQTT samt HA-Gerät, Google Sheet, ChatGPT-Key und Zeitplan, **ohne in der Gruppe etwas zu schreiben**. Ruft ein anderes Programm (z. B. Node-RED) mit demselben Token ab, steht dort „Konflikt“ und der Admin-Chat bekommt eine Meldung. |
 | **Einstellungen** | Zugangsdaten und Zeitplan |
 | **Texte & Regeln** | Alle Texte des Bots, die Biermengen-Regeln (z. B. `3 = 5l oder Kasten`, `sonst = 30l+`, wahlweise nach Bier- oder allen Zusagen), die Nachzügler-Sprüche und **eigene Befehle** (`/regeln = Text`). Mit Vorschau, optional auch an den Admin-Chat. |
 | **Update** | Zeigt, ob es auf GitHub eine neue Version gibt, und aktualisiert per Klick |
